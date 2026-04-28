@@ -1,0 +1,22 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "drone-project"
+version = "0.1.0"
+description = "Offline track detection and evaluation pipeline for a downward-facing drone camera."
+readme = "README.md"
+requires-python = ">=3.10"
+dependencies = [
+  "numpy>=2.0.0",
+  "opencv-python>=4.10.0",
+]
+
+[project.optional-dependencies]
+train = [
+  "torch>=2.0.0",
+]
+
+[tool.setuptools.packages.find]
+include = ["track_detection*", "detectors*"]
