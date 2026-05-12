@@ -6,10 +6,11 @@ multiple detection methods over recorded footage.
 
 ## Project layout
 
-- `track_detection/` shared types, preprocessing, geometry, and CLI
+- `track_detection/` shared types, preprocessing, geometry, movement output, and CLI
 - `detectors/threshold_morph/` threshold + morphology detector and plan
 - `detectors/edge_geometry/` edge + contour detector and plan
 - `detectors/segmentation/` learned segmentation detector and plan
+- `detectors/drone_light/` fast top-down drone detector using the CoDrone EDU top light
 - `evaluation/` output format notes for offline comparison runs
 - `tests/` synthetic-frame regression tests
 
@@ -18,8 +19,9 @@ multiple detection methods over recorded footage.
 1. `threshold_morph`: HSV/Lab masking, morphology cleanup, centerline from mask
 2. `edge_geometry`: edge extraction, contour scoring, centerline from geometry
 3. `segmentation`: lightweight segmentation model with optional PyTorch training
+4. `drone_light`: bright colored top-light localization for overhead cameras
 
-All methods return the same result shape:
+All methods return the same result shape and a `control_observation` JSON object:
 
 - centerline points in image coordinates
 - heading estimate in radians
@@ -27,6 +29,7 @@ All methods return the same result shape:
 - confidence score
 - validity flag
 - debug overlay frame
+- movement-ready target fields such as normalized offset, position, and velocity
 
 ## Quick start
 
@@ -44,6 +47,33 @@ python3 -m track_detection.cli run \
   --input path/to/video.mp4 \
   --output-dir outputs/threshold_run
 ```
+
+Run the CoDrone EDU top-light detector on a live overhead camera:
+
+```bash
+python3 -m track_detection.cli live \
+  --method drone_light \
+  --camera-index 0 \
+  --output-dir outputs/live_drone
+```
+
+For a phone or IP camera, pass the stream URL instead of a local camera index:
+
+```bash
+python3 -m track_detection.cli live \
+  --method drone_light \
+  --source http://PHONE_IP:8080/video \
+  --output-dir outputs/live_drone
+```
+
+Use `--no-display` when running headless. The live command streams
+`results.jsonl` as frames arrive and writes `debug_overlay.mp4` when an output
+directory is provided.
+
+The detector defaults to colored lights because white highlights in the room can
+look like white LEDs. If you need white-light tracking, construct
+`DroneLightDetector(DroneLightConfig(detect_white_light=True))` and calibrate it
+against your camera view.
 
 Extract frames from a recorded video:
 

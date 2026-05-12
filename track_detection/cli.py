@@ -3,9 +3,10 @@ from __future__ import annotations
 import argparse
 from pathlib import Path
 
+from detectors.factory import DETECTOR_METHODS
 from detectors.segmentation.train import train_segmentation_model
 
-from .pipeline import run_on_path
+from .pipeline import run_live_camera, run_on_path
 from .video import extract_frames
 
 
@@ -14,9 +15,20 @@ def build_parser() -> argparse.ArgumentParser:
     subparsers = parser.add_subparsers(dest="command", required=True)
 
     run_parser = subparsers.add_parser("run", help="Run a detector on a video or image folder")
-    run_parser.add_argument("--method", required=True, choices=["threshold_morph", "edge_geometry", "segmentation"])
+    run_parser.add_argument("--method", required=True, choices=DETECTOR_METHODS)
     run_parser.add_argument("--input", required=True, type=Path)
     run_parser.add_argument("--output-dir", required=True, type=Path)
+
+    live_parser = subparsers.add_parser("live", help="Run a detector on a live camera feed")
+    live_parser.add_argument("--method", default="drone_light", choices=DETECTOR_METHODS)
+    live_parser.add_argument("--camera-index", type=int, default=0)
+    live_parser.add_argument(
+        "--source",
+        help="Camera index, video path, or IP camera URL. Overrides --camera-index when provided.",
+    )
+    live_parser.add_argument("--output-dir", type=Path)
+    live_parser.add_argument("--max-frames", type=int)
+    live_parser.add_argument("--no-display", action="store_true")
 
     extract_parser = subparsers.add_parser("extract-frames", help="Extract frames from a video")
     extract_parser.add_argument("--input", required=True, type=Path)
@@ -44,6 +56,17 @@ def main() -> None:
 
     if args.command == "extract-frames":
         extract_frames(args.input, args.output_dir, every_n=max(1, args.every_n))
+        return
+
+    if args.command == "live":
+        run_live_camera(
+            method=args.method,
+            camera_index=args.camera_index,
+            source=args.source,
+            output_dir=args.output_dir,
+            display=not args.no_display,
+            max_frames=args.max_frames,
+        )
         return
 
     if args.command == "train-segmentation":
