@@ -331,6 +331,7 @@ def _run_bridge_loop(
         config = controller_config or TrackFollowerConfig()
         config.height_target_cm = round(float(config.height_target_cm) * rise_fraction, 1)
         controller = TrackFollowerController(mission=mission, config=config)
+        adapter.set_takeoff_target_cm(config.height_target_cm)
         adapter.takeoff()
 
         controlled_frames = 0
