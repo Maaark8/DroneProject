@@ -21,6 +21,10 @@ class DroneLightConfig:
     min_brightness: int = 205
     brightness_percentile: float = 99.2
     min_saturation: int = 80
+    prefer_red_light: bool = True
+    preferred_hue_margin: int = 16
+    hotspot_percentile: float = 95.0
+    hotspot_delta: int = 18
     detect_white_light: bool = False
     white_min_brightness: int = 252
     white_max_saturation: int = 55
@@ -106,6 +110,9 @@ class DroneLightDetector:
                 else round(float(np.hypot(velocity_px_s["x"], velocity_px_s["y"])), 2),
                 "component_score": round(float(candidate["score"]), 3),
                 "component_circularity": round(float(candidate["circularity"]), 3),
+                "preferred_hue_score": round(float(candidate["preferred_hue_score"]), 3),
+                "hotspot_score": round(float(candidate["hotspot_score"]), 3),
+                "peak_brightness": int(candidate["peak_brightness"]),
             }
         )
 
@@ -224,10 +231,25 @@ def _best_light_candidate(mask: np.ndarray, frame: np.ndarray, config: DroneLigh
         ys, xs = np.nonzero(component_mask)
         mean_hsv = np.round(hsv[ys, xs].mean(axis=0)).astype(int)
         mean_bgr = np.round(frame[ys, xs].mean(axis=0)).astype(int)
+        brightness_values = hsv[ys, xs, 2].astype(np.float32)
         brightness_score = float(mean_hsv[2]) / 255.0
         saturation_score = float(mean_hsv[1]) / 255.0
         area_score = min(1.0, area / float(max(config.min_light_pixels * 8, 1)))
-        score = (0.45 * brightness_score) + (0.2 * saturation_score) + (0.2 * circularity) + (0.15 * area_score)
+        preferred_hue_score = _preferred_hue_score(
+            hue=int(mean_hsv[0]),
+            saturation=int(mean_hsv[1]),
+            config=config,
+        )
+        peak_brightness = float(np.percentile(brightness_values, config.hotspot_percentile))
+        hotspot_score = _clip01((peak_brightness - float(mean_hsv[2]) - float(config.hotspot_delta)) / 55.0)
+        score = (
+            (0.28 * brightness_score)
+            + (0.12 * saturation_score)
+            + (0.18 * circularity)
+            + (0.12 * area_score)
+            + (0.18 * preferred_hue_score)
+            + (0.12 * hotspot_score)
+        )
 
         candidate = {
             "center": (float(centroids[component_id][0]), float(centroids[component_id][1])),
@@ -243,6 +265,9 @@ def _best_light_candidate(mask: np.ndarray, frame: np.ndarray, config: DroneLigh
             "color_bgr": [int(mean_bgr[0]), int(mean_bgr[1]), int(mean_bgr[2])],
             "circularity": float(circularity),
             "score": float(score),
+            "preferred_hue_score": float(preferred_hue_score),
+            "hotspot_score": float(hotspot_score),
+            "peak_brightness": int(round(peak_brightness)),
         }
         if best is None or candidate["score"] > best["score"]:
             best = candidate
@@ -294,6 +319,20 @@ def _elapsed_seconds(
 
 def _clip(value: float, lower: float, upper: float) -> float:
     return min(max(float(value), lower), upper)
+
+
+def _clip01(value: float) -> float:
+    return _clip(value, 0.0, 1.0)
+
+
+def _preferred_hue_score(hue: int, saturation: int, config: DroneLightConfig) -> float:
+    if not config.prefer_red_light:
+        return 1.0
+    if saturation < max(config.min_saturation // 2, 1):
+        return 0.0
+    distance = min(abs(int(hue) - 0), abs(int(hue) - 179))
+    score = 1.0 - (distance / float(max(config.preferred_hue_margin, 1)))
+    return _clip01(score)
 
 
 def _hue_name(hue: int, saturation: int) -> str:

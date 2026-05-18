@@ -6,6 +6,7 @@ import pytest
 
 from detectors.edge_geometry.detector import EdgeGeometryDetector
 from detectors.drone_light.detector import DroneLightDetector
+from detectors.drone_marker.detector import ArucoMarkerDetector, generate_aruco_marker_image
 from detectors.segmentation.detector import SegmentationDetector
 from detectors.threshold_morph.detector import ThresholdMorphDetector
 from track_detection.control_output import to_control_observation
@@ -35,6 +36,28 @@ def make_synthetic_drone_frame(center: tuple[int, int] = (420, 180), color=(0, 0
     cv2.circle(frame, center, 16, color, -1)
     cv2.circle(frame, center, 6, (255, 255, 255), -1)
     return frame
+
+
+def make_synthetic_drone_frame_with_distractor() -> np.ndarray:
+    frame = make_synthetic_drone_frame(center=(420, 180), color=(0, 0, 255))
+    cv2.circle(frame, (210, 250), 14, (0, 255, 0), -1)
+    cv2.circle(frame, (210, 250), 4, (210, 255, 210), -1)
+    return frame
+
+
+def make_synthetic_aruco_frame(marker_id: int = 7, top_left: tuple[int, int] = (320, 120)) -> np.ndarray:
+    dictionary = cv2.aruco.getPredefinedDictionary(cv2.aruco.DICT_4X4_50)
+    marker = cv2.aruco.generateImageMarker(dictionary, marker_id, 120)
+    padded = np.full((160, 160), 255, dtype=np.uint8)
+    padded[20:140, 20:140] = marker
+    frame = np.full((480, 640, 3), 230, dtype=np.uint8)
+    x, y = top_left
+    frame[y : y + 160, x : x + 160, :] = cv2.cvtColor(padded, cv2.COLOR_GRAY2BGR)
+    return frame
+
+
+def make_synthetic_wrong_aruco_frame() -> np.ndarray:
+    return make_synthetic_aruco_frame(marker_id=37, top_left=(120, 140))
 
 
 @pytest.mark.parametrize(
@@ -86,6 +109,17 @@ def test_drone_light_detector_reports_velocity_for_live_control() -> None:
     assert result.metadata["velocity_px_s"]["y"] == pytest.approx(-30.0, abs=2.0)
 
 
+def test_drone_light_detector_prefers_red_hotspot_over_other_bright_blobs() -> None:
+    detector = DroneLightDetector()
+    result = detector.detect(FrameInput(frame=make_synthetic_drone_frame_with_distractor()))
+
+    assert result.valid
+    assert result.metadata["color_name"] == "red"
+    assert result.metadata["preferred_hue_score"] > 0.8
+    assert abs(result.centerline[0][0] - 420) < 8
+    assert abs(result.centerline[0][1] - 180) < 8
+
+
 def test_drone_detection_control_observation_schema() -> None:
     detector = DroneLightDetector()
     result = detector.detect(FrameInput(frame=make_synthetic_drone_frame(center=(320, 240)), frame_id=3))
@@ -96,6 +130,52 @@ def test_drone_detection_control_observation_schema() -> None:
     assert observation["target"]["kind"] == "drone"
     assert observation["target"]["offset_norm"]["x"] == pytest.approx(0.0, abs=0.01)
     assert observation["target"]["offset_norm"]["y"] == pytest.approx(0.0, abs=0.01)
+
+
+def test_aruco_marker_detector_finds_expected_marker() -> None:
+    detector = ArucoMarkerDetector()
+    result = detector.detect(FrameInput(frame=make_synthetic_aruco_frame(), frame_id=5, timestamp_s=0.4))
+
+    assert result.valid
+    assert result.confidence > 0.5
+    assert result.debug_frame is not None
+    assert abs(result.centerline[0][0] - 399.5) < 8
+    assert abs(result.centerline[0][1] - 199.5) < 8
+    assert result.metadata["marker_id"] == 7
+    assert result.metadata["offset_norm"]["x"] > 0
+    assert result.metadata["heading_rad"] == pytest.approx(0.0, abs=0.05)
+
+
+def test_aruco_marker_detection_control_observation_schema() -> None:
+    detector = ArucoMarkerDetector()
+    result = detector.detect(FrameInput(frame=make_synthetic_aruco_frame(top_left=(240, 160)), frame_id=9))
+    observation = to_control_observation(result)
+
+    assert observation["source_method"] == "drone_marker"
+    assert observation["target"]["kind"] == "drone"
+    assert observation["target"]["marker_id"] == 7
+    assert observation["target"]["heading_rad"] == pytest.approx(0.0, abs=0.05)
+
+
+def test_aruco_marker_detector_rejects_wrong_marker_id() -> None:
+    detector = ArucoMarkerDetector()
+    result = detector.detect(FrameInput(frame=make_synthetic_wrong_aruco_frame(), frame_id=11))
+
+    assert not result.valid
+    assert result.confidence == 0.0
+    assert result.centerline == []
+    assert result.metadata["rejected_reason"] == "marker_not_found"
+
+
+def test_generate_aruco_marker_image_writes_png(tmp_path) -> None:
+    output_path = tmp_path / "aruco_id7.png"
+    generate_aruco_marker_image(output_path, marker_id=7, side_pixels=200, margin_pixels=40)
+
+    image = cv2.imread(str(output_path), cv2.IMREAD_GRAYSCALE)
+    assert image is not None
+    assert image.shape == (280, 280)
+    assert int(image.min()) == 0
+    assert int(image.max()) == 255
 
 
 def test_segmentation_detector_requires_torch() -> None:

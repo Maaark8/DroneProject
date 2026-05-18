@@ -7,7 +7,6 @@ from pathlib import Path
 import cv2
 import numpy as np
 
-from detectors.drone_light.detector import DroneLightDetector
 from detectors.factory import create_detector
 
 from .codrone_adapter import CoDroneEDUAdapter, FlightAdapter, NullFlightAdapter
@@ -19,6 +18,7 @@ from .mission import MissionPath, mission_path_from_result
 from .types import DetectionResult, FrameInput, Point
 
 TRACK_METHODS = tuple(method for method in ("threshold_morph", "edge_geometry", "segmentation"))
+DRONE_METHODS = tuple(method for method in ("drone_light", "drone_marker"))
 
 
 def export_mission_path(
@@ -56,8 +56,11 @@ def follow_track_live(
     command_rate_hz: float = 10.0,
     controller_config: TrackFollowerConfig | None = None,
     dry_run: bool = False,
+    drone_method: str = "drone_light",
 ) -> None:
     mission = MissionPath.load(mission_path)
+    if drone_method not in DRONE_METHODS:
+        raise ValueError(f"Unknown drone detector method: {drone_method!r}")
     capture_source = normalize_capture_source(source if source is not None else camera_index)
     capture = open_live_capture(capture_source)
     if not capture.isOpened():
@@ -80,6 +83,7 @@ def follow_track_live(
             initial_frame_id=0,
             window_name="follow-track",
             log_filename="follow_log.jsonl",
+            drone_method=drone_method,
         )
     finally:
         capture.release()
@@ -101,12 +105,15 @@ def auto_follow_track(
     sample_spacing_px: float = 12.0,
     reverse_path: bool = False,
     auto_orient: bool = True,
+    drone_method: str = "drone_light",
 ) -> None:
     if method not in TRACK_METHODS:
         raise ValueError(f"Auto follow requires a track detector, got {method!r}.")
+    if drone_method not in DRONE_METHODS:
+        raise ValueError(f"Unknown drone detector method: {drone_method!r}.")
 
     track_detector = create_detector(method)
-    drone_detector = DroneLightDetector()
+    drone_detector = create_detector(drone_method)
     capture_source = normalize_capture_source(source if source is not None else camera_index)
     capture = open_live_capture(capture_source)
     if not capture.isOpened():
@@ -141,6 +148,7 @@ def auto_follow_track(
             initial_frame_id=initial_frame_id,
             window_name="auto-follow-track",
             log_filename="follow_log.jsonl",
+            drone_method=drone_method,
         )
     finally:
         capture.release()
@@ -209,9 +217,10 @@ def _run_follow_loop(
     initial_frame_id: int,
     window_name: str,
     log_filename: str,
+    drone_method: str,
 ) -> None:
     controller = TrackFollowerController(mission=mission, config=controller_config or TrackFollowerConfig())
-    detector = DroneLightDetector()
+    detector = create_detector(drone_method)
     adapter: FlightAdapter = NullFlightAdapter() if dry_run else CoDroneEDUAdapter()
     result_handle = None
     command_duration_s = 1.0 / max(float(command_rate_hz), 1.0)
@@ -283,7 +292,7 @@ def _calibrate_mission_from_capture(
     capture,
     capture_source: str | int,
     track_detector,
-    drone_detector: DroneLightDetector,
+    drone_detector,
     method: str,
     calibration_frames: int,
     sample_spacing_px: float,

@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 
-DETECTOR_METHODS = ("threshold_morph", "edge_geometry", "segmentation", "drone_light")
+DETECTOR_METHODS = ("threshold_morph", "edge_geometry", "segmentation", "drone_light", "drone_marker")
 
 
 def create_detector(method: str):
@@ -21,4 +21,8 @@ def create_detector(method: str):
         from .drone_light.detector import DroneLightDetector
 
         return DroneLightDetector()
+    if method == "drone_marker":
+        from .drone_marker.detector import ArucoMarkerDetector
+
+        return ArucoMarkerDetector()
     raise ValueError(f"Unknown detector method: {method}")
