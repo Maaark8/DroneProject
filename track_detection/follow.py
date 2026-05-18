@@ -156,6 +156,238 @@ def auto_follow_track(
             cv2.destroyAllWindows()
 
 
+def bridge_track_follow(
+    method: str,
+    camera_index: int = 0,
+    source: str | int | None = None,
+    output_dir: Path | None = None,
+    display: bool = True,
+    max_frames: int | None = None,
+    command_rate_hz: float = 10.0,
+    controller_config: TrackFollowerConfig | None = None,
+    dry_run: bool = False,
+    sample_spacing_px: float = 12.0,
+    reverse_path: bool = False,
+    auto_orient: bool = True,
+    drone_method: str = "drone_light",
+    redetect_every: int = 1,
+    warmup_frames: int = 60,
+) -> None:
+    """Bridge live track detection straight to drone control.
+
+    Unlike ``auto_follow_track`` (which calibrates one fixed mission then flies
+    it), this re-runs the track detector every ``redetect_every`` frames and
+    swaps the controller's path live, so the drone follows the track as it is
+    currently seen rather than a snapshot.
+    """
+    if method not in TRACK_METHODS:
+        raise ValueError(f"Bridge follow requires a track detector, got {method!r}.")
+    if drone_method not in DRONE_METHODS:
+        raise ValueError(f"Unknown drone detector method: {drone_method!r}.")
+
+    track_detector = create_detector(method)
+    drone_detector = create_detector(drone_method)
+    capture_source = normalize_capture_source(source if source is not None else camera_index)
+    capture = open_live_capture(capture_source)
+    if not capture.isOpened():
+        raise ValueError(
+            f"Unable to open live video source: {capture_source!r}. "
+            "Use --source with a camera index, video path, or IP camera URL."
+        )
+
+    try:
+        _run_bridge_loop(
+            capture=capture,
+            capture_source=capture_source,
+            track_detector=track_detector,
+            drone_detector=drone_detector,
+            output_dir=output_dir,
+            display=display,
+            max_frames=max_frames,
+            command_rate_hz=command_rate_hz,
+            controller_config=controller_config,
+            dry_run=dry_run,
+            sample_spacing_px=sample_spacing_px,
+            reverse_path=reverse_path,
+            auto_orient=auto_orient,
+            redetect_every=max(int(redetect_every), 1),
+            warmup_frames=max(int(warmup_frames), 1),
+        )
+    finally:
+        capture.release()
+        if display:
+            cv2.destroyAllWindows()
+
+
+def _build_oriented_mission(
+    track_result: DetectionResult,
+    capture_source: str | int,
+    reverse_path: bool,
+    auto_orient: bool,
+    drone_point: Point | None,
+    sample_spacing_px: float,
+    fallback_frame_size: dict[str, int] | None,
+) -> MissionPath:
+    should_reverse = reverse_path
+    if not reverse_path and auto_orient and drone_point is not None:
+        should_reverse = _should_reverse_path(track_result.centerline, drone_point)
+    return mission_path_from_result(
+        track_result,
+        frame_size=_frame_size(track_result) or fallback_frame_size,
+        source=f"camera:{capture_source}" if isinstance(capture_source, int) else str(capture_source),
+        reverse=should_reverse,
+        sample_spacing_px=sample_spacing_px,
+    )
+
+
+def _run_bridge_loop(
+    capture,
+    capture_source: str | int,
+    track_detector,
+    drone_detector,
+    output_dir: Path | None,
+    display: bool,
+    max_frames: int | None,
+    command_rate_hz: float,
+    controller_config: TrackFollowerConfig | None,
+    dry_run: bool,
+    sample_spacing_px: float,
+    reverse_path: bool,
+    auto_orient: bool,
+    redetect_every: int,
+    warmup_frames: int,
+) -> None:
+    adapter: FlightAdapter = NullFlightAdapter() if dry_run else CoDroneEDUAdapter()
+    command_duration_s = 1.0 / max(float(command_rate_hz), 1.0)
+    started = time.perf_counter()
+    result_handle = None
+    if output_dir is not None:
+        ensure_directory(output_dir)
+        result_handle = (output_dir / "bridge_log.jsonl").open("w", encoding="utf-8")
+
+    source_label = f"camera:{capture_source}" if isinstance(capture_source, int) else str(capture_source)
+    last_drone_point: Point | None = None
+
+    try:
+        adapter.connect()
+
+        # Warm up: read frames until the track detector yields a usable path.
+        mission: MissionPath | None = None
+        frame_id = 0
+        while frame_id < warmup_frames:
+            ok, frame = capture.read()
+            if not ok:
+                break
+            track_result = track_detector.detect(FrameInput(frame=frame, frame_id=frame_id))
+            track_result.metadata["source"] = source_label
+            if track_result.valid and track_result.centerline:
+                drone_result = drone_detector.detect(FrameInput(frame=frame, frame_id=frame_id))
+                last_drone_point = _drone_point(drone_result) or last_drone_point
+                mission = _build_oriented_mission(
+                    track_result,
+                    capture_source,
+                    reverse_path,
+                    auto_orient,
+                    last_drone_point,
+                    sample_spacing_px,
+                    None,
+                )
+                break
+            frame_id += 1
+
+        if mission is None:
+            raise ValueError(
+                f"No valid track detected in the first {warmup_frames} live frame(s); "
+                "aim the camera at the track before bridging."
+            )
+
+        controller = TrackFollowerController(
+            mission=mission,
+            config=controller_config or TrackFollowerConfig(),
+        )
+        adapter.takeoff()
+
+        controlled_frames = 0
+        while True:
+            loop_started = time.perf_counter()
+            ok, frame = capture.read()
+            if not ok:
+                break
+            timestamp_s = time.perf_counter() - started
+
+            track_result = None
+            if frame_id % redetect_every == 0:
+                track_result = track_detector.detect(
+                    FrameInput(frame=frame, frame_id=frame_id, timestamp_s=timestamp_s)
+                )
+                track_result.metadata["source"] = source_label
+                if track_result.valid and track_result.centerline:
+                    try:
+                        controller.mission = _build_oriented_mission(
+                            track_result,
+                            capture_source,
+                            reverse_path,
+                            auto_orient,
+                            last_drone_point,
+                            sample_spacing_px,
+                            controller.mission.frame_size,
+                        )
+                    except ValueError:
+                        pass  # keep the last good path for this frame
+
+            drone_result = drone_detector.detect(
+                FrameInput(frame=frame, frame_id=frame_id, timestamp_s=timestamp_s)
+            )
+            drone_result.metadata["source"] = source_label
+            last_drone_point = _drone_point(drone_result) or last_drone_point
+
+            observation = to_control_observation(drone_result)
+            height_cm = adapter.get_height_cm()
+            control = controller.update(observation, height_cm=height_cm)
+            adapter.send_command(control.command, duration_s=command_duration_s)
+
+            if result_handle is not None:
+                payload = result_to_payload(drone_result)
+                payload["track_follow"] = control.as_dict()
+                payload["track_follow"]["height_cm"] = None if height_cm is None else round(float(height_cm), 2)
+                payload["track_redetected"] = track_result is not None and track_result.valid
+                payload["mission_length_px"] = round(float(controller.mission.path_length_px), 2)
+                result_handle.write(json.dumps(payload) + "\n")
+                result_handle.flush()
+
+            if display or output_dir is not None:
+                if track_result is not None and track_result.debug_frame is not None:
+                    base_frame = track_result.debug_frame
+                elif drone_result.debug_frame is not None:
+                    base_frame = drone_result.debug_frame
+                else:
+                    base_frame = frame
+                debug_frame = _overlay_follow_debug(base_frame, controller.mission, control, height_cm=height_cm)
+                if display:
+                    cv2.imshow("bridge-follow", debug_frame)
+                    key = cv2.waitKey(1) & 0xFF
+                    if key in (27, ord("q")):
+                        break
+                if output_dir is not None:
+                    cv2.imwrite(str(output_dir / "latest_bridge_debug.png"), debug_frame)
+
+            frame_id += 1
+            controlled_frames += 1
+            if control.command.land or (max_frames is not None and controlled_frames >= max_frames):
+                break
+
+            elapsed = time.perf_counter() - loop_started
+            if dry_run and elapsed < command_duration_s:
+                time.sleep(command_duration_s - elapsed)
+    finally:
+        try:
+            adapter.land()
+        finally:
+            adapter.close()
+            if result_handle is not None:
+                result_handle.close()
+
+
 def _best_detection_result(detector, input_path: Path, max_frames: int) -> DetectionResult:
     if input_path.is_dir():
         best: DetectionResult | None = None

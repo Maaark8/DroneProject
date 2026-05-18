@@ -100,7 +100,8 @@ class CoDroneEDUAdapter:
         return height_value
 
     def land(self) -> None:
-        self._require_drone()
+        if self._drone is None:
+            return
         if not self._airborne:
             return
         self._drone.land()

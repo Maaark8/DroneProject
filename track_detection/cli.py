@@ -8,7 +8,14 @@ from detectors.factory import DETECTOR_METHODS
 from detectors.segmentation.train import train_segmentation_model
 
 from .controller import TrackFollowerConfig
-from .follow import DRONE_METHODS, TRACK_METHODS, auto_follow_track, export_mission_path, follow_track_live
+from .follow import (
+    DRONE_METHODS,
+    TRACK_METHODS,
+    auto_follow_track,
+    bridge_track_follow,
+    export_mission_path,
+    follow_track_live,
+)
 from .pipeline import run_live_camera, run_on_path
 from .video import extract_frames
 
@@ -99,6 +106,44 @@ def build_parser() -> argparse.ArgumentParser:
     auto_follow_parser.add_argument("--sample-spacing", type=float, default=12.0)
     auto_follow_parser.add_argument("--reverse-path", action="store_true")
     auto_follow_parser.add_argument("--no-auto-orient", action="store_true")
+
+    bridge_parser = subparsers.add_parser(
+        "bridge",
+        help="Bridge live track detection straight to drone control (re-detects every frame)",
+    )
+    bridge_parser.add_argument("--method", default="wood_path", choices=TRACK_METHODS)
+    bridge_parser.add_argument("--camera-index", type=int, default=0)
+    bridge_parser.add_argument(
+        "--source",
+        help="Camera index, video path, or IP camera URL. Overrides --camera-index when provided.",
+    )
+    bridge_parser.add_argument("--output-dir", type=Path)
+    bridge_parser.add_argument("--max-frames", type=int)
+    bridge_parser.add_argument("--no-display", action="store_true")
+    bridge_parser.add_argument("--command-rate", type=float, default=10.0)
+    bridge_parser.add_argument("--height-cm", type=float, default=80.0)
+    bridge_parser.add_argument("--roll-sign", type=int, choices=(-1, 1), default=1)
+    bridge_parser.add_argument("--pitch-sign", type=int, choices=(-1, 1), default=1)
+    bridge_parser.add_argument("--drone-method", choices=DRONE_METHODS, default="drone_light")
+    bridge_parser.add_argument("--vision-loss-frames", type=int, default=30)
+    bridge_parser.add_argument("--land-on-vision-loss", action="store_true")
+    bridge_parser.add_argument("--land-on-complete", action="store_true")
+    bridge_parser.add_argument("--dry-run", action="store_true")
+    bridge_parser.add_argument("--sample-spacing", type=float, default=12.0)
+    bridge_parser.add_argument("--reverse-path", action="store_true")
+    bridge_parser.add_argument("--no-auto-orient", action="store_true")
+    bridge_parser.add_argument(
+        "--redetect-every",
+        type=int,
+        default=1,
+        help="Re-run the (heavy) track detector every N frames; >1 keeps control responsive.",
+    )
+    bridge_parser.add_argument(
+        "--warmup-frames",
+        type=int,
+        default=60,
+        help="Max frames to wait for a first valid track before takeoff.",
+    )
 
     train_parser = subparsers.add_parser("train-segmentation", help="Train the segmentation baseline")
     train_parser.add_argument("--images", required=True, type=Path)
@@ -200,6 +245,33 @@ def main() -> None:
             reverse_path=args.reverse_path,
             auto_orient=not args.no_auto_orient,
             drone_method=args.drone_method,
+        )
+        return
+
+    if args.command == "bridge":
+        bridge_track_follow(
+            method=args.method,
+            camera_index=args.camera_index,
+            source=args.source,
+            output_dir=args.output_dir,
+            display=not args.no_display,
+            max_frames=args.max_frames,
+            command_rate_hz=args.command_rate,
+            controller_config=TrackFollowerConfig(
+                height_target_cm=args.height_cm,
+                roll_sign=args.roll_sign,
+                pitch_sign=args.pitch_sign,
+                lost_frame_limit=args.vision_loss_frames,
+                land_on_vision_loss=args.land_on_vision_loss,
+                land_on_completion=args.land_on_complete,
+            ),
+            dry_run=args.dry_run,
+            sample_spacing_px=args.sample_spacing,
+            reverse_path=args.reverse_path,
+            auto_orient=not args.no_auto_orient,
+            drone_method=args.drone_method,
+            redetect_every=args.redetect_every,
+            warmup_frames=args.warmup_frames,
         )
         return
 
