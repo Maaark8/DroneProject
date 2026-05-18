@@ -135,14 +135,27 @@ def build_parser() -> argparse.ArgumentParser:
     bridge_parser.add_argument(
         "--redetect-every",
         type=int,
-        default=1,
-        help="Re-run the (heavy) track detector every N frames; >1 keeps control responsive.",
+        default=5,
+        help="Re-run the (heavy) track detector every N frames; higher = less lag.",
     )
     bridge_parser.add_argument(
         "--warmup-frames",
         type=int,
         default=60,
         help="Max frames to wait for a first valid track before takeoff.",
+    )
+    bridge_parser.add_argument(
+        "--rise-fraction",
+        type=float,
+        default=0.25,
+        help="Climb to this fraction of --height-cm (0.25 = a quarter of the way up).",
+    )
+    bridge_parser.add_argument(
+        "--coast-frames",
+        type=int,
+        default=8,
+        help="Keep steering from the last known drone position for up to N frames "
+        "of marker dropout before hovering.",
     )
 
     train_parser = subparsers.add_parser("train-segmentation", help="Train the segmentation baseline")
@@ -272,6 +285,8 @@ def main() -> None:
             drone_method=args.drone_method,
             redetect_every=args.redetect_every,
             warmup_frames=args.warmup_frames,
+            rise_fraction=args.rise_fraction,
+            coast_frames=args.coast_frames,
         )
         return
 

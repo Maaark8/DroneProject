@@ -170,8 +170,10 @@ def bridge_track_follow(
     reverse_path: bool = False,
     auto_orient: bool = True,
     drone_method: str = "drone_light",
-    redetect_every: int = 1,
+    redetect_every: int = 5,
     warmup_frames: int = 60,
+    rise_fraction: float = 0.25,
+    coast_frames: int = 8,
 ) -> None:
     """Bridge live track detection straight to drone control.
 
@@ -212,6 +214,8 @@ def bridge_track_follow(
             auto_orient=auto_orient,
             redetect_every=max(int(redetect_every), 1),
             warmup_frames=max(int(warmup_frames), 1),
+            rise_fraction=min(max(float(rise_fraction), 0.05), 1.0),
+            coast_frames=max(int(coast_frames), 0),
         )
     finally:
         capture.release()
@@ -240,6 +244,26 @@ def _build_oriented_mission(
     )
 
 
+def _synthetic_drone_observation(point: Point, frame_size: dict[str, int] | None) -> dict:
+    """Build a controller observation from a remembered drone position.
+
+    Used to coast through brief marker dropouts so following does not stall on
+    a single missed detection.
+    """
+    return {
+        "schema_version": "drone_control_observation.v1",
+        "source_method": "coast",
+        "valid": True,
+        "confidence": 1.0,
+        "frame_size": frame_size,
+        "target": {
+            "kind": "drone",
+            "position_px": {"x": round(float(point[0]), 2), "y": round(float(point[1]), 2)},
+            "velocity_px_s": {"x": 0.0, "y": 0.0},
+        },
+    }
+
+
 def _run_bridge_loop(
     capture,
     capture_source: str | int,
@@ -256,6 +280,8 @@ def _run_bridge_loop(
     auto_orient: bool,
     redetect_every: int,
     warmup_frames: int,
+    rise_fraction: float,
+    coast_frames: int,
 ) -> None:
     adapter: FlightAdapter = NullFlightAdapter() if dry_run else CoDroneEDUAdapter()
     command_duration_s = 1.0 / max(float(command_rate_hz), 1.0)
@@ -267,6 +293,7 @@ def _run_bridge_loop(
 
     source_label = f"camera:{capture_source}" if isinstance(capture_source, int) else str(capture_source)
     last_drone_point: Point | None = None
+    frames_since_drone = 0
 
     try:
         adapter.connect()
@@ -301,10 +328,9 @@ def _run_bridge_loop(
                 "aim the camera at the track before bridging."
             )
 
-        controller = TrackFollowerController(
-            mission=mission,
-            config=controller_config or TrackFollowerConfig(),
-        )
+        config = controller_config or TrackFollowerConfig()
+        config.height_target_cm = round(float(config.height_target_cm) * rise_fraction, 1)
+        controller = TrackFollowerController(mission=mission, config=config)
         adapter.takeoff()
 
         controlled_frames = 0
@@ -339,9 +365,20 @@ def _run_bridge_loop(
                 FrameInput(frame=frame, frame_id=frame_id, timestamp_s=timestamp_s)
             )
             drone_result.metadata["source"] = source_label
-            last_drone_point = _drone_point(drone_result) or last_drone_point
+            drone_point = _drone_point(drone_result)
+            if drone_point is not None:
+                last_drone_point = drone_point
+                frames_since_drone = 0
+                observation = to_control_observation(drone_result)
+            else:
+                frames_since_drone += 1
+                if last_drone_point is not None and frames_since_drone <= coast_frames:
+                    observation = _synthetic_drone_observation(
+                        last_drone_point, drone_result.metadata.get("frame_size")
+                    )
+                else:
+                    observation = to_control_observation(drone_result)
 
-            observation = to_control_observation(drone_result)
             height_cm = adapter.get_height_cm()
             control = controller.update(observation, height_cm=height_cm)
             adapter.send_command(control.command, duration_s=command_duration_s)
@@ -352,10 +389,13 @@ def _run_bridge_loop(
                 payload["track_follow"]["height_cm"] = None if height_cm is None else round(float(height_cm), 2)
                 payload["track_redetected"] = track_result is not None and track_result.valid
                 payload["mission_length_px"] = round(float(controller.mission.path_length_px), 2)
+                payload["coasting"] = drone_point is None and 0 < frames_since_drone <= coast_frames
                 result_handle.write(json.dumps(payload) + "\n")
                 result_handle.flush()
 
-            if display or output_dir is not None:
+            # The debug PNG is heavy; only write it on re-detect frames to cut I/O lag.
+            want_disk = output_dir is not None and (frame_id % redetect_every == 0)
+            if display or want_disk:
                 if track_result is not None and track_result.debug_frame is not None:
                     base_frame = track_result.debug_frame
                 elif drone_result.debug_frame is not None:
@@ -368,7 +408,7 @@ def _run_bridge_loop(
                     key = cv2.waitKey(1) & 0xFF
                     if key in (27, ord("q")):
                         break
-                if output_dir is not None:
+                if want_disk:
                     cv2.imwrite(str(output_dir / "latest_bridge_debug.png"), debug_frame)
 
             frame_id += 1

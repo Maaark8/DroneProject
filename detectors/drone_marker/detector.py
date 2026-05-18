@@ -44,6 +44,10 @@ class ArucoMarkerDetector:
         frame = frame_input.frame
         working, scale_x, scale_y = _resize_for_detection(frame, self.config.working_width)
         corners, ids, rejected = self._detector.detectMarkers(working)
+        if ids is None and (scale_x != 1.0 or scale_y != 1.0):
+            # A small marker can vanish in the downscaled pass; retry full-res.
+            corners, ids, rejected = self._detector.detectMarkers(frame)
+            scale_x = scale_y = 1.0
 
         metadata: dict[str, Any] = {
             "detection_type": "drone_marker",
