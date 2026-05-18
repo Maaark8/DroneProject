@@ -11,6 +11,7 @@ multiple detection methods over recorded footage.
 - `detectors/edge_geometry/` edge + contour detector and plan
 - `detectors/segmentation/` learned segmentation detector and plan
 - `detectors/drone_light/` fast top-down drone detector using the CoDrone EDU top light
+- `detectors/drone_marker/` ArUco marker detector for a printed marker on top of the drone
 - `evaluation/` output format notes for offline comparison runs
 - `tests/` synthetic-frame regression tests
 
@@ -20,6 +21,7 @@ multiple detection methods over recorded footage.
 2. `edge_geometry`: edge extraction, contour scoring, centerline from geometry
 3. `segmentation`: lightweight segmentation model with optional PyTorch training
 4. `drone_light`: bright colored top-light localization for overhead cameras
+5. `drone_marker`: ArUco marker localization and heading for overhead cameras
 
 All methods return the same result shape and a `control_observation` JSON object:
 
@@ -57,6 +59,15 @@ python3 -m track_detection.cli live \
   --output-dir outputs/live_drone
 ```
 
+Run the ArUco marker detector on the same overhead camera:
+
+```bash
+python3 -m track_detection.cli live \
+  --method drone_marker \
+  --camera-index 0 \
+  --output-dir outputs/live_marker
+```
+
 For a phone or IP camera, pass the stream URL instead of a local camera index:
 
 ```bash
@@ -84,6 +95,7 @@ Follow the saved path with a CoDrone EDU under an overhead camera:
 ```bash
 python3 -m track_detection.cli follow-track \
   --mission outputs/missions/wood_track.json \
+  --drone-method drone_marker \
   --camera-index 0 \
   --output-dir outputs/follow_wood_track
 ```
@@ -95,17 +107,31 @@ starts following:
 ```bash
 python3 -m track_detection.cli auto-follow \
   --method threshold_morph \
+  --drone-method drone_marker \
   --camera-index 0 \
   --output-dir outputs/auto_follow_run
 ```
 
 `auto-follow` tries to orient the saved path so it starts near the drone's
-detected top light. Disable that with `--no-auto-orient`, or force the opposite
-direction with `--reverse-path`.
+detected start position. Disable that with `--no-auto-orient`, or force the
+opposite direction with `--reverse-path`.
 
 Use `--dry-run` to exercise the controller and debug overlays without pairing to
 the drone. If the camera axes are mirrored relative to the drone, flip them with
 `--roll-sign -1` and/or `--pitch-sign -1`.
+
+Generate a printable ArUco marker image:
+
+```bash
+python3 -m track_detection.cli generate-marker \
+  --output outputs/markers/aruco_id7.png \
+  --dictionary DICT_4X4_50 \
+  --marker-id 7
+```
+
+Print the marker with its white border intact and tape it flat on top of the
+drone. `follow-track` and `auto-follow` accept `--drone-method drone_marker` to
+use it instead of the red-light detector.
 
 For phone or IP camera streams, the live commands now prefer low-buffer capture
 and always process the newest available frame so the CLI does not accumulate
@@ -139,13 +165,14 @@ python3 -m track_detection.cli train-segmentation \
 Base runtime:
 
 - `numpy`
-- `opencv-python`
+- `opencv-contrib-python`
 
 Optional training dependency:
 
 - `torch`
 
 The segmentation detector is implemented, but it requires PyTorch at runtime.
+The marker detector requires the ArUco module included in `opencv-contrib-python`.
 Track following with real hardware also requires the official CoDrone EDU Python
 library (`codrone_edu`) installed separately.
 

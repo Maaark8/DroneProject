@@ -25,7 +25,7 @@ def to_control_observation(result: DetectionResult) -> dict[str, Any]:
         "target": None,
     }
 
-    if metadata.get("detection_type") == "drone_light":
+    if metadata.get("detection_type") in {"drone_light", "drone_marker"}:
         observation["target"] = {
             "kind": "drone",
             "position_px": metadata.get("position_px"),
@@ -36,6 +36,8 @@ def to_control_observation(result: DetectionResult) -> dict[str, Any]:
             "bbox_xywh": metadata.get("bbox_xywh"),
             "radius_px": metadata.get("radius_px"),
             "color_name": metadata.get("color_name"),
+            "heading_rad": metadata.get("heading_rad"),
+            "marker_id": metadata.get("marker_id"),
         }
         return observation
 

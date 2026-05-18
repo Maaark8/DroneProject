@@ -3,11 +3,12 @@ from __future__ import annotations
 import argparse
 from pathlib import Path
 
+from detectors.drone_marker.detector import generate_aruco_marker_image
 from detectors.factory import DETECTOR_METHODS
 from detectors.segmentation.train import train_segmentation_model
 
 from .controller import TrackFollowerConfig
-from .follow import TRACK_METHODS, auto_follow_track, export_mission_path, follow_track_live
+from .follow import DRONE_METHODS, TRACK_METHODS, auto_follow_track, export_mission_path, follow_track_live
 from .pipeline import run_live_camera, run_on_path
 from .video import extract_frames
 
@@ -37,6 +38,13 @@ def build_parser() -> argparse.ArgumentParser:
     extract_parser.add_argument("--output-dir", required=True, type=Path)
     extract_parser.add_argument("--every-n", type=int, default=5)
 
+    marker_parser = subparsers.add_parser("generate-marker", help="Generate an ArUco marker image for the drone")
+    marker_parser.add_argument("--output", required=True, type=Path)
+    marker_parser.add_argument("--dictionary", default="DICT_4X4_50")
+    marker_parser.add_argument("--marker-id", type=int, default=7)
+    marker_parser.add_argument("--side-px", type=int, default=400)
+    marker_parser.add_argument("--margin-px", type=int, default=80)
+
     export_parser = subparsers.add_parser("export-path", help="Export a mission path from a track detection result")
     export_parser.add_argument("--method", required=True, choices=TRACK_METHODS)
     export_parser.add_argument("--input", required=True, type=Path)
@@ -59,6 +67,7 @@ def build_parser() -> argparse.ArgumentParser:
     follow_parser.add_argument("--height-cm", type=float, default=80.0)
     follow_parser.add_argument("--roll-sign", type=int, choices=(-1, 1), default=1)
     follow_parser.add_argument("--pitch-sign", type=int, choices=(-1, 1), default=1)
+    follow_parser.add_argument("--drone-method", choices=DRONE_METHODS, default="drone_light")
     follow_parser.add_argument("--vision-loss-frames", type=int, default=30)
     follow_parser.add_argument("--land-on-vision-loss", action="store_true")
     follow_parser.add_argument("--land-on-complete", action="store_true")
@@ -81,6 +90,7 @@ def build_parser() -> argparse.ArgumentParser:
     auto_follow_parser.add_argument("--height-cm", type=float, default=80.0)
     auto_follow_parser.add_argument("--roll-sign", type=int, choices=(-1, 1), default=1)
     auto_follow_parser.add_argument("--pitch-sign", type=int, choices=(-1, 1), default=1)
+    auto_follow_parser.add_argument("--drone-method", choices=DRONE_METHODS, default="drone_light")
     auto_follow_parser.add_argument("--vision-loss-frames", type=int, default=30)
     auto_follow_parser.add_argument("--land-on-vision-loss", action="store_true")
     auto_follow_parser.add_argument("--land-on-complete", action="store_true")
@@ -111,6 +121,16 @@ def main() -> None:
 
     if args.command == "extract-frames":
         extract_frames(args.input, args.output_dir, every_n=max(1, args.every_n))
+        return
+
+    if args.command == "generate-marker":
+        generate_aruco_marker_image(
+            output_path=args.output,
+            dictionary_name=args.dictionary,
+            marker_id=args.marker_id,
+            side_pixels=args.side_px,
+            margin_pixels=args.margin_px,
+        )
         return
 
     if args.command == "live":
@@ -153,6 +173,7 @@ def main() -> None:
                 land_on_completion=args.land_on_complete,
             ),
             dry_run=args.dry_run,
+            drone_method=args.drone_method,
         )
         return
 
@@ -178,6 +199,7 @@ def main() -> None:
             sample_spacing_px=args.sample_spacing,
             reverse_path=args.reverse_path,
             auto_orient=not args.no_auto_orient,
+            drone_method=args.drone_method,
         )
         return
 
