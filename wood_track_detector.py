@@ -147,7 +147,7 @@ class WoodTrackDetector:
         return mask, smoothed, offset, heading, debug
 
     def smooth_centerline_poly(self, points, degree=2):
-        """Aproximează punctele cu un polinom x = f(y) de gradul dat."""
+        #Aproximează punctele cu un polinom x = f(y) de gradul dat.
         if len(points) < degree + 1:
             return points
 

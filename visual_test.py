@@ -26,7 +26,7 @@ def main():
 
         frame = cv2.imread(img_path)
         if frame is None:
-            print(f"  ❌ Nu am putut citi {fname}")
+            print(f"Nu am putut citi {fname}")
             continue
 
         # Procesare
@@ -36,7 +36,7 @@ def main():
         if len(centerline) > 0:
             print(f"  Puncte centerline: {len(centerline)}")
         else:
-            print("  ⚠️ Nu s-a detectat nicio linie centrală!")
+            print("Nu s-a detectat nicio linie centrală!")
 
         base_name = os.path.splitext(fname)[0]
 
@@ -85,7 +85,7 @@ def main():
                 break
             cv2.destroyAllWindows()
 
-    print(f"\n✅ Toate rezultatele sunt în folderul '{OUTPUT_DIR}'.")
+    print(f"\nToate rezultatele sunt în folderul '{OUTPUT_DIR}'.")
 
 
 if __name__ == "__main__":
