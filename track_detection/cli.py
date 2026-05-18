@@ -6,6 +6,8 @@ from pathlib import Path
 from detectors.factory import DETECTOR_METHODS
 from detectors.segmentation.train import train_segmentation_model
 
+from .controller import TrackFollowerConfig
+from .follow import TRACK_METHODS, export_mission_path, follow_track_live
 from .pipeline import run_live_camera, run_on_path
 from .video import extract_frames
 
@@ -34,6 +36,31 @@ def build_parser() -> argparse.ArgumentParser:
     extract_parser.add_argument("--input", required=True, type=Path)
     extract_parser.add_argument("--output-dir", required=True, type=Path)
     extract_parser.add_argument("--every-n", type=int, default=5)
+
+    export_parser = subparsers.add_parser("export-path", help="Export a mission path from a track detection result")
+    export_parser.add_argument("--method", required=True, choices=TRACK_METHODS)
+    export_parser.add_argument("--input", required=True, type=Path)
+    export_parser.add_argument("--output", required=True, type=Path)
+    export_parser.add_argument("--reverse-path", action="store_true")
+    export_parser.add_argument("--max-frames", type=int, default=120)
+    export_parser.add_argument("--sample-spacing", type=float, default=12.0)
+
+    follow_parser = subparsers.add_parser("follow-track", help="Track-following control loop for CoDrone EDU")
+    follow_parser.add_argument("--mission", required=True, type=Path)
+    follow_parser.add_argument("--camera-index", type=int, default=0)
+    follow_parser.add_argument(
+        "--source",
+        help="Camera index, video path, or IP camera URL. Overrides --camera-index when provided.",
+    )
+    follow_parser.add_argument("--output-dir", type=Path)
+    follow_parser.add_argument("--max-frames", type=int)
+    follow_parser.add_argument("--no-display", action="store_true")
+    follow_parser.add_argument("--command-rate", type=float, default=10.0)
+    follow_parser.add_argument("--height-cm", type=float, default=80.0)
+    follow_parser.add_argument("--roll-sign", type=int, choices=(-1, 1), default=1)
+    follow_parser.add_argument("--pitch-sign", type=int, choices=(-1, 1), default=1)
+    follow_parser.add_argument("--land-on-complete", action="store_true")
+    follow_parser.add_argument("--dry-run", action="store_true")
 
     train_parser = subparsers.add_parser("train-segmentation", help="Train the segmentation baseline")
     train_parser.add_argument("--images", required=True, type=Path)
@@ -66,6 +93,36 @@ def main() -> None:
             output_dir=args.output_dir,
             display=not args.no_display,
             max_frames=args.max_frames,
+        )
+        return
+
+    if args.command == "export-path":
+        export_mission_path(
+            method=args.method,
+            input_path=args.input,
+            output_path=args.output,
+            reverse_path=args.reverse_path,
+            max_frames=args.max_frames,
+            sample_spacing_px=args.sample_spacing,
+        )
+        return
+
+    if args.command == "follow-track":
+        follow_track_live(
+            mission_path=args.mission,
+            camera_index=args.camera_index,
+            source=args.source,
+            output_dir=args.output_dir,
+            display=not args.no_display,
+            max_frames=args.max_frames,
+            command_rate_hz=args.command_rate,
+            controller_config=TrackFollowerConfig(
+                height_target_cm=args.height_cm,
+                roll_sign=args.roll_sign,
+                pitch_sign=args.pitch_sign,
+                land_on_completion=args.land_on_complete,
+            ),
+            dry_run=args.dry_run,
         )
         return
 

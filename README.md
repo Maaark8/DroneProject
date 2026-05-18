@@ -70,6 +70,28 @@ Use `--no-display` when running headless. The live command streams
 `results.jsonl` as frames arrive and writes `debug_overlay.mp4` when an output
 directory is provided.
 
+Export a mission path from a static overhead view of the track:
+
+```bash
+python3 -m track_detection.cli export-path \
+  --method threshold_morph \
+  --input tracks_for_drone/wood_track.jpeg \
+  --output outputs/missions/wood_track.json
+```
+
+Follow the saved path with a CoDrone EDU under an overhead camera:
+
+```bash
+python3 -m track_detection.cli follow-track \
+  --mission outputs/missions/wood_track.json \
+  --camera-index 0 \
+  --output-dir outputs/follow_wood_track
+```
+
+Use `--dry-run` to exercise the controller and debug overlays without pairing to
+the drone. If the camera axes are mirrored relative to the drone, flip them with
+`--roll-sign -1` and/or `--pitch-sign -1`.
+
 The detector defaults to colored lights because white highlights in the room can
 look like white LEDs. If you need white-light tracking, construct
 `DroneLightDetector(DroneLightConfig(detect_white_light=True))` and calibrate it
@@ -105,6 +127,8 @@ Optional training dependency:
 - `torch`
 
 The segmentation detector is implemented, but it requires PyTorch at runtime.
+Track following with real hardware also requires the official CoDrone EDU Python
+library (`codrone_edu`) installed separately.
 
 ## Testing
 
