@@ -8,6 +8,7 @@ from detectors.edge_geometry.detector import EdgeGeometryDetector
 from detectors.drone_light.detector import DroneLightDetector
 from detectors.drone_marker.detector import ArucoMarkerDetector, generate_aruco_marker_image
 from detectors.segmentation.detector import SegmentationDetector
+from detectors.wood_path.detector import WoodPathDetector
 from detectors.threshold_morph.detector import ThresholdMorphDetector
 from track_detection.control_output import to_control_observation
 from track_detection.types import FrameInput
@@ -28,6 +29,48 @@ def make_synthetic_track_frame(x_shift: int = 0) -> np.ndarray:
     cv2.polylines(frame, [points], isClosed=False, color=(70, 110, 170), thickness=90)
     cv2.polylines(frame, [points], isClosed=False, color=(40, 60, 90), thickness=14)
     return frame
+
+
+def make_synthetic_s_curve_frame() -> np.ndarray:
+    frame = np.full((480, 640, 3), 205, dtype=np.uint8)
+    ys = np.linspace(40, 460, 48)
+    xs = 320 + 45 * np.sin((ys - 40) / 420.0 * 2.0 * np.pi)
+    points = np.array([[int(x), int(y)] for x, y in zip(xs, ys)], dtype=np.int32)
+    cv2.polylines(frame, [points], isClosed=False, color=(70, 110, 170), thickness=42)
+    return frame
+
+
+def test_wood_path_traces_s_curve_in_order() -> None:
+    detector = WoodPathDetector()
+    result = detector.detect(FrameInput(frame=make_synthetic_s_curve_frame()))
+
+    assert result.valid
+    assert len(result.centerline) >= detector.config.min_path_points
+    # Ordered bottom-of-image first; trace spans the curve vertically.
+    assert result.centerline[0][1] > result.centerline[-1][1]
+    ys = [y for _, y in result.centerline]
+    assert max(ys) - min(ys) > 250
+    assert result.metadata["path_shape"] == "snake"
+
+
+def test_wood_path_classifies_straight_track() -> None:
+    detector = WoodPathDetector()
+    frame = np.full((480, 640, 3), 205, dtype=np.uint8)
+    cv2.line(frame, (320, 460), (320, 60), (70, 110, 170), 42)
+    result = detector.detect(FrameInput(frame=frame))
+
+    assert result.valid
+    assert result.metadata["path_shape"] == "straight"
+    assert abs(result.metadata["net_turn_deg"]) < 20.0
+
+
+def test_wood_path_rejects_blank_frame() -> None:
+    detector = WoodPathDetector()
+    result = detector.detect(FrameInput(frame=np.full((480, 640, 3), 205, dtype=np.uint8)))
+
+    assert not result.valid
+    assert result.centerline == []
+    assert result.confidence == 0.0
 
 
 def make_synthetic_drone_frame(center: tuple[int, int] = (420, 180), color=(0, 0, 255)) -> np.ndarray:

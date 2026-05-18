@@ -17,7 +17,7 @@ from .live_capture import normalize_capture_source, open_live_capture
 from .mission import MissionPath, mission_path_from_result
 from .types import DetectionResult, FrameInput, Point
 
-TRACK_METHODS = tuple(method for method in ("threshold_morph", "edge_geometry", "segmentation"))
+TRACK_METHODS = tuple(method for method in ("threshold_morph", "edge_geometry", "wood_path", "segmentation"))
 DRONE_METHODS = tuple(method for method in ("drone_light", "drone_marker"))
 
 

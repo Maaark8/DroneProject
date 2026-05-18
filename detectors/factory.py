@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 
-DETECTOR_METHODS = ("threshold_morph", "edge_geometry", "segmentation", "drone_light", "drone_marker")
+DETECTOR_METHODS = ("threshold_morph", "edge_geometry", "wood_path", "segmentation", "drone_light", "drone_marker")
 
 
 def create_detector(method: str):
@@ -13,6 +13,10 @@ def create_detector(method: str):
         from .edge_geometry.detector import EdgeGeometryDetector
 
         return EdgeGeometryDetector()
+    if method == "wood_path":
+        from .wood_path.detector import WoodPathDetector
+
+        return WoodPathDetector()
     if method == "segmentation":
         from .segmentation.detector import SegmentationDetector
 
