@@ -3,11 +3,12 @@ from __future__ import annotations
 import cv2
 import numpy as np
 import pytest
+from pathlib import Path
 
 from detectors.edge_geometry.detector import EdgeGeometryDetector
 from detectors.drone_light.detector import DroneLightDetector
 from detectors.drone_marker.detector import ArucoMarkerDetector, generate_aruco_marker_image
-from detectors.segmentation.detector import SegmentationDetector
+from detectors.segmentation.detector import SegmentationConfig, SegmentationDetector, _infer_checkpoint_backend
 from detectors.wood_path.detector import WoodPathDetector
 from detectors.threshold_morph.detector import ThresholdMorphDetector
 from track_detection.control_output import to_control_observation
@@ -221,6 +222,41 @@ def test_generate_aruco_marker_image_writes_png(tmp_path) -> None:
     assert int(image.max()) == 255
 
 
-def test_segmentation_detector_requires_torch() -> None:
+def test_segmentation_detector_requires_runtime_dependency() -> None:
     with pytest.raises(ImportError):
         SegmentationDetector()
+
+
+def test_segmentation_checkpoint_backend_detection() -> None:
+    assert _infer_checkpoint_backend(Path("model/exp.pt")) == "yolo"
+
+    tmp_path = Path("tests") / "__fake_unet_checkpoint__.pt"
+    try:
+        tmp_path.write_bytes(b"plain-state-dict-checkpoint")
+        assert _infer_checkpoint_backend(tmp_path) == "unet"
+    finally:
+        if tmp_path.exists():
+            tmp_path.unlink()
+
+
+def test_yolo_segmentation_detector_uses_full_frame_path() -> None:
+    detector = object.__new__(SegmentationDetector)
+    detector.config = SegmentationConfig()
+    detector.backend = "yolo"
+    detector.method_name = "segmentation"
+    detector.overlay_color = (255, 120, 80)
+
+    def fake_detect_mask_yolo(frame):
+        mask = np.zeros(frame.shape[:2], dtype=np.uint8)
+        mask[:, 300:340] = 255
+        return mask, {"backend": "yolo", "selected_confidence": 0.9}
+
+    detector._detect_mask_yolo = fake_detect_mask_yolo
+
+    frame = np.full((480, 640, 3), 220, dtype=np.uint8)
+    result = detector.detect(FrameInput(frame=frame, frame_id=12))
+
+    assert result.valid
+    assert result.metadata["source_backend"] == "yolo"
+    assert result.metadata["frame_size"] == {"width": 640, "height": 480}
+    assert abs(result.centerline[-1][0] - 319.5) < 5

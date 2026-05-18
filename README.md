@@ -50,6 +50,16 @@ python3 -m track_detection.cli run \
   --output-dir outputs/threshold_run
 ```
 
+If `model/exp.pt` contains an Ultralytics YOLO segmentation checkpoint, the
+`segmentation` method will use it automatically:
+
+```bash
+python3 -m track_detection.cli run \
+  --method segmentation \
+  --input path/to/video.mp4 \
+  --output-dir outputs/segmentation_run
+```
+
 Run the CoDrone EDU top-light detector on a live overhead camera:
 
 ```bash
@@ -99,6 +109,66 @@ python3 -m track_detection.cli follow-track \
   --camera-index 0 \
   --output-dir outputs/follow_wood_track
 ```
+
+For wood-on-wood scenes, the more reliable workflow is to calibrate once and fly
+waypoints instead of chasing the track every frame. Capture one overhead frame,
+click two reference points with known spacing, click the track centerline, then
+click the drone start position. Colored landing pad centers work well as the
+reference pair:
+
+```bash
+python3 -m track_detection.cli manual-mission \
+  --source http://PHONE_IP:8080/video \
+  --output outputs/missions/manual_track.json \
+  --reference-distance-cm 60
+```
+
+Then fly the saved mission as CoDrone absolute waypoints using the ArUco marker
+to define the drone's start position and heading:
+
+```bash
+python3 -m track_detection.cli follow-waypoints \
+  --mission outputs/missions/manual_track.json \
+  --drone-method drone_marker \
+  --source http://PHONE_IP:8080/video \
+  --output-dir outputs/follow_waypoints \
+  --dry-run
+```
+
+Mount the marker so its printed top edge points toward the drone's forward
+direction. `follow-waypoints` converts image deltas into CoDrone X/Y waypoints
+from that heading and uses the mission scale stored in `manual-mission`.
+Waypoint speed defaults to `0.8 m/s`, which matches the CoDrone EDU absolute
+position API range more closely than the lower visual-following speeds.
+The current waypoint defaults are more aggressive than before: `0.8 m/s`,
+`120 px` spacing, `0.15 m` arrival tolerance, and `3.0 s` timeout per waypoint,
+so the drone advances sooner instead of lingering on each intermediate point.
+
+If you do not want any live drone detection, there is also a manual-start mode.
+`manual-mission` now stores the clicked start point in the mission, so the
+manual-start follower can reuse it directly. Place the drone at the beginning of
+the track and align it with the first segment:
+
+```bash
+python3 -m track_detection.cli follow-waypoints-manual-start \
+  --mission outputs/missions/manual_track.json \
+  --output-dir outputs/follow_waypoints_manual \
+  --dry-run
+```
+
+You can still override the stored start with a fresh click or explicit
+coordinates:
+
+```bash
+python3 -m track_detection.cli follow-waypoints-manual-start \
+  --mission outputs/missions/manual_track.json \
+  --start-x 412 \
+  --start-y 268 \
+  --dry-run
+```
+
+This mode assumes the drone is already pointing along the start of the track, so
+it uses the first path segment as the drone's forward heading.
 
 Run the full overhead-camera workflow in one command. This mode samples live
 frames first, detects the track, saves `mission_path.json`, then takes off and
@@ -170,9 +240,17 @@ Base runtime:
 Optional training dependency:
 
 - `torch`
+- `ultralytics` for YOLO segmentation checkpoints such as `model/exp.pt`
 
-The segmentation detector is implemented, but it requires PyTorch at runtime.
+The segmentation detector requires either PyTorch for the built-in U-Net path or
+Ultralytics for YOLO segmentation checkpoints.
 The marker detector requires the ArUco module included in `opencv-contrib-python`.
+The optional `yolo` extra installs the Ultralytics runtime for YOLO segmentation
+models:
+
+```bash
+python3 -m pip install -e .[yolo] --no-build-isolation
+```
 Track following with real hardware also requires the official CoDrone EDU Python
 library (`codrone_edu`) installed separately.
 

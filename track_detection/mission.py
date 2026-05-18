@@ -19,6 +19,8 @@ class MissionPath:
     source: str | None = None
     schema_version: str = MISSION_SCHEMA_VERSION
     sample_spacing_px: float | None = None
+    meters_per_pixel: float | None = None
+    start_point_px: Point | None = None
 
     @property
     def path_length_px(self) -> float:
@@ -31,6 +33,10 @@ class MissionPath:
             "source": self.source,
             "frame_size": self.frame_size,
             "sample_spacing_px": self.sample_spacing_px,
+            "meters_per_pixel": self.meters_per_pixel,
+            "start_point_px": None
+            if self.start_point_px is None
+            else {"x": round(float(self.start_point_px[0]), 2), "y": round(float(self.start_point_px[1]), 2)},
             "path_length_px": round(self.path_length_px, 2),
             "points": [{"x": round(float(x), 2), "y": round(float(y), 2)} for x, y in self.points],
         }
@@ -38,6 +44,10 @@ class MissionPath:
     @classmethod
     def from_dict(cls, payload: dict) -> "MissionPath":
         points = [(float(point["x"]), float(point["y"])) for point in payload["points"]]
+        start_point_payload = payload.get("start_point_px")
+        start_point_px = None
+        if start_point_payload is not None:
+            start_point_px = (float(start_point_payload["x"]), float(start_point_payload["y"]))
         return cls(
             points=points,
             frame_size=payload.get("frame_size"),
@@ -45,6 +55,8 @@ class MissionPath:
             source=payload.get("source"),
             schema_version=payload.get("schema_version", MISSION_SCHEMA_VERSION),
             sample_spacing_px=payload.get("sample_spacing_px"),
+            meters_per_pixel=payload.get("meters_per_pixel"),
+            start_point_px=start_point_px,
         )
 
     def save(self, output_path: Path) -> None:

@@ -5,6 +5,7 @@ from dataclasses import dataclass, field
 from typing import Any, Protocol
 
 from .controller import DroneCommand
+from .waypoints import Waypoint
 
 
 class FlightAdapter(Protocol):
@@ -14,6 +15,7 @@ class FlightAdapter(Protocol):
     def send_command(self, command: DroneCommand, duration_s: float) -> None: ...
     def get_height_cm(self) -> float | None: ...
     def get_telemetry(self) -> dict[str, float | None]: ...
+    def fly_waypoint(self, waypoint: Waypoint, tolerance_m: float, timeout_s: float) -> dict[str, Any]: ...
     def land(self) -> None: ...
     def close(self) -> None: ...
 
@@ -23,6 +25,7 @@ class NullFlightAdapter:
     command_history: list[dict[str, Any]] = field(default_factory=list)
     connected: bool = False
     airborne: bool = False
+    position_m: tuple[float, float, float] = (0.0, 0.0, 0.0)
 
     def connect(self) -> None:
         self.connected = True
@@ -45,6 +48,23 @@ class NullFlightAdapter:
     def get_telemetry(self) -> dict[str, float | None]:
         return {"pos_x_cm": None, "pos_y_cm": None, "yaw_deg": None, "height_cm": None}
 
+    def fly_waypoint(self, waypoint: Waypoint, tolerance_m: float, timeout_s: float) -> dict[str, Any]:
+        self.position_m = (float(waypoint.x_m), float(waypoint.y_m), float(waypoint.z_m))
+        payload = {
+            "event": "waypoint",
+            "waypoint": waypoint.to_dict(),
+            "tolerance_m": round(float(tolerance_m), 3),
+            "timeout_s": round(float(timeout_s), 3),
+            "position_m": {
+                "x": round(self.position_m[0], 3),
+                "y": round(self.position_m[1], 3),
+                "z": round(self.position_m[2], 3),
+            },
+            "reached": True,
+        }
+        self.command_history.append(payload)
+        return payload
+
     def land(self) -> None:
         self.airborne = False
         self.command_history.append({"event": "land"})
@@ -56,6 +76,7 @@ class NullFlightAdapter:
 @dataclass(slots=True)
 class CoDroneEDUAdapter:
     command_pause_s: float = 0.02
+    position_poll_s: float = 0.1
     takeoff_target_cm: float | None = None
     descend_timeout_s: float = 4.0
     _drone: Any | None = None
@@ -104,7 +125,7 @@ class CoDroneEDUAdapter:
                     time.sleep(0.3)
                     return
                 except Exception:
-                    pass  # fall back to a manual throttle descent below
+                    pass
 
         deadline = time.perf_counter() + max(float(self.descend_timeout_s), 0.5)
         while time.perf_counter() < deadline:
@@ -115,7 +136,7 @@ class CoDroneEDUAdapter:
             if height <= 0 or height >= 900 or height <= target_cm + 3.0:
                 break
             error_cm = height - target_cm
-            power = -int(min(max(error_cm, 5.0), 40.0))  # gentle, capped descent
+            power = -int(min(max(error_cm, 5.0), 40.0))
             self._drone.set_throttle(power)
             self._drone.move(0.2)
         self._drone.set_throttle(0)
@@ -153,12 +174,6 @@ class CoDroneEDUAdapter:
         return height_value
 
     def get_telemetry(self) -> dict[str, float | None]:
-        """Onboard fused state for camera+IMU fusion.
-
-        ``pos_x/pos_y`` are the drone's optical-flow + IMU position estimate
-        (cm), ``yaw_deg`` aligns its body axes to the world, ``height_cm`` is
-        the range sensor. All best-effort: any field may be None.
-        """
         self._require_drone()
 
         def _safe(call) -> float | None:
@@ -173,6 +188,46 @@ class CoDroneEDUAdapter:
             "pos_y_cm": _safe(lambda: self._drone.get_pos_y("cm")),
             "yaw_deg": _safe(self._drone.get_angle_z),
             "height_cm": self.get_height_cm(),
+        }
+
+    def fly_waypoint(self, waypoint: Waypoint, tolerance_m: float, timeout_s: float) -> dict[str, Any]:
+        self._require_drone()
+        if not self._airborne:
+            return {"reached": False, "reason": "not_airborne"}
+
+        self._drone.send_absolute_position(
+            float(waypoint.x_m),
+            float(waypoint.y_m),
+            float(waypoint.z_m),
+            float(waypoint.speed_m_s),
+            int(waypoint.heading_deg),
+            int(waypoint.rotational_velocity_dps),
+        )
+
+        deadline = time.perf_counter() + max(float(timeout_s), 0.1)
+        last_position = self._position_data()
+        while time.perf_counter() < deadline:
+            position = self._position_data()
+            if position is not None:
+                last_position = position
+                distance = _distance_m(
+                    (float(waypoint.x_m), float(waypoint.y_m), float(waypoint.z_m)),
+                    position,
+                )
+                if distance <= float(tolerance_m):
+                    if waypoint.hold_s > 0:
+                        time.sleep(float(waypoint.hold_s))
+                    return {
+                        "reached": True,
+                        "distance_m": round(distance, 3),
+                        "position_m": _position_payload(position),
+                    }
+            time.sleep(self.position_poll_s)
+
+        return {
+            "reached": False,
+            "reason": "timeout",
+            "position_m": None if last_position is None else _position_payload(last_position),
         }
 
     def land(self) -> None:
@@ -198,3 +253,51 @@ class CoDroneEDUAdapter:
     def _require_drone(self) -> None:
         if self._drone is None:
             raise RuntimeError("CoDrone adapter is not connected.")
+
+    def _position_data(self) -> tuple[float, float, float] | None:
+        self._require_drone()
+        try:
+            payload = self._drone.get_position_data()
+        except Exception:
+            return None
+        return _parse_position_data(payload)
+
+
+def _parse_position_data(payload: Any) -> tuple[float, float, float] | None:
+    if payload is None:
+        return None
+    if isinstance(payload, dict):
+        keys = ("x", "y", "z")
+        if all(key in payload for key in keys):
+            try:
+                return float(payload["x"]), float(payload["y"]), float(payload["z"])
+            except (TypeError, ValueError):
+                return None
+    if isinstance(payload, (list, tuple)) and len(payload) >= 3:
+        try:
+            return float(payload[0]), float(payload[1]), float(payload[2])
+        except (TypeError, ValueError):
+            return None
+    for attribute_set in (("x", "y", "z"), ("X", "Y", "Z")):
+        if all(hasattr(payload, attribute) for attribute in attribute_set):
+            try:
+                return tuple(float(getattr(payload, attribute)) for attribute in attribute_set)
+            except (TypeError, ValueError):
+                return None
+    return None
+
+
+def _position_payload(position_m: tuple[float, float, float]) -> dict[str, float]:
+    return {
+        "x": round(float(position_m[0]), 3),
+        "y": round(float(position_m[1]), 3),
+        "z": round(float(position_m[2]), 3),
+    }
+
+
+def _distance_m(target: tuple[float, float, float], actual: tuple[float, float, float]) -> float:
+    return (
+        ((float(target[0]) - float(actual[0])) ** 2)
+        + ((float(target[1]) - float(actual[1])) ** 2)
+        + ((float(target[2]) - float(actual[2])) ** 2)
+    ) ** 0.5

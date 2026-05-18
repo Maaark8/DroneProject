@@ -3,6 +3,8 @@ from __future__ import annotations
 import argparse
 from pathlib import Path
 
+import cv2
+
 from detectors.drone_marker.detector import generate_aruco_marker_image
 from detectors.factory import DETECTOR_METHODS
 from detectors.segmentation.train import train_segmentation_model
@@ -16,8 +18,10 @@ from .follow import (
     export_mission_path,
     follow_track_live,
 )
+from .manual_calibration import capture_calibration_frame, manual_mission_from_frame
 from .pipeline import run_live_camera, run_on_path
 from .video import extract_frames
+from .waypoint_follow import follow_waypoints_live, follow_waypoints_manual_start
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -44,6 +48,20 @@ def build_parser() -> argparse.ArgumentParser:
     extract_parser.add_argument("--input", required=True, type=Path)
     extract_parser.add_argument("--output-dir", required=True, type=Path)
     extract_parser.add_argument("--every-n", type=int, default=5)
+
+    manual_parser = subparsers.add_parser(
+        "manual-mission",
+        help="Capture one frame, click a scale reference and track points, then save a scaled mission path",
+    )
+    manual_parser.add_argument("--output", required=True, type=Path)
+    manual_parser.add_argument("--reference-distance-cm", required=True, type=float)
+    manual_parser.add_argument("--input", type=Path)
+    manual_parser.add_argument("--camera-index", type=int, default=0)
+    manual_parser.add_argument(
+        "--source",
+        help="Camera index, video path, or IP camera URL. Overrides --camera-index when provided.",
+    )
+    manual_parser.add_argument("--sample-spacing", type=float, default=12.0)
 
     marker_parser = subparsers.add_parser("generate-marker", help="Generate an ArUco marker image for the drone")
     marker_parser.add_argument("--output", required=True, type=Path)
@@ -79,6 +97,52 @@ def build_parser() -> argparse.ArgumentParser:
     follow_parser.add_argument("--land-on-vision-loss", action="store_true")
     follow_parser.add_argument("--land-on-complete", action="store_true")
     follow_parser.add_argument("--dry-run", action="store_true")
+
+    waypoint_parser = subparsers.add_parser(
+        "follow-waypoints",
+        help="Fly a scaled mission path as absolute CoDrone waypoints using the start marker pose",
+    )
+    waypoint_parser.add_argument("--mission", required=True, type=Path)
+    waypoint_parser.add_argument("--camera-index", type=int, default=0)
+    waypoint_parser.add_argument(
+        "--source",
+        help="Camera index, video path, or IP camera URL. Overrides --camera-index when provided.",
+    )
+    waypoint_parser.add_argument("--output-dir", type=Path)
+    waypoint_parser.add_argument("--calibration-frames", type=int, default=45)
+    waypoint_parser.add_argument("--drone-method", choices=DRONE_METHODS, default="drone_marker")
+    waypoint_parser.add_argument("--height-m", type=float, default=0.8)
+    waypoint_parser.add_argument("--waypoint-spacing", type=float, default=120.0)
+    waypoint_parser.add_argument("--speed-m-s", type=float, default=0.8)
+    waypoint_parser.add_argument("--meters-per-pixel", type=float)
+    waypoint_parser.add_argument("--position-tolerance-m", type=float, default=0.15)
+    waypoint_parser.add_argument("--waypoint-timeout-s", type=float, default=3.0)
+    waypoint_parser.add_argument("--reverse-path", action="store_true")
+    waypoint_parser.add_argument("--no-auto-orient", action="store_true")
+    waypoint_parser.add_argument("--dry-run", action="store_true")
+
+    manual_start_parser = subparsers.add_parser(
+        "follow-waypoints-manual-start",
+        help="Fly a scaled mission path from a manually provided start point without drone detection",
+    )
+    manual_start_parser.add_argument("--mission", required=True, type=Path)
+    manual_start_parser.add_argument("--output-dir", type=Path)
+    manual_start_parser.add_argument("--input", type=Path)
+    manual_start_parser.add_argument("--camera-index", type=int, default=0)
+    manual_start_parser.add_argument(
+        "--source",
+        help="Camera index, video path, or IP camera URL. Overrides --camera-index when provided.",
+    )
+    manual_start_parser.add_argument("--height-m", type=float, default=0.8)
+    manual_start_parser.add_argument("--waypoint-spacing", type=float, default=120.0)
+    manual_start_parser.add_argument("--speed-m-s", type=float, default=0.8)
+    manual_start_parser.add_argument("--meters-per-pixel", type=float)
+    manual_start_parser.add_argument("--position-tolerance-m", type=float, default=0.15)
+    manual_start_parser.add_argument("--waypoint-timeout-s", type=float, default=3.0)
+    manual_start_parser.add_argument("--reverse-path", action="store_true")
+    manual_start_parser.add_argument("--start-x", type=float)
+    manual_start_parser.add_argument("--start-y", type=float)
+    manual_start_parser.add_argument("--dry-run", action="store_true")
 
     auto_follow_parser = subparsers.add_parser(
         "auto-follow",
@@ -181,6 +245,22 @@ def main() -> None:
         extract_frames(args.input, args.output_dir, every_n=max(1, args.every_n))
         return
 
+    if args.command == "manual-mission":
+        frame, source_label = capture_calibration_frame(
+            input_path=args.input,
+            camera_index=args.camera_index,
+            source=args.source,
+        )
+        mission, overlay = manual_mission_from_frame(
+            frame=frame,
+            source=source_label,
+            reference_distance_cm=args.reference_distance_cm,
+            sample_spacing_px=args.sample_spacing,
+        )
+        mission.save(args.output)
+        cv2.imwrite(str(args.output.with_name(f"{args.output.stem}_overlay.png")), overlay)
+        return
+
     if args.command == "generate-marker":
         generate_aruco_marker_image(
             output_path=args.output,
@@ -258,6 +338,46 @@ def main() -> None:
             reverse_path=args.reverse_path,
             auto_orient=not args.no_auto_orient,
             drone_method=args.drone_method,
+        )
+        return
+
+    if args.command == "follow-waypoints":
+        follow_waypoints_live(
+            mission_path=args.mission,
+            camera_index=args.camera_index,
+            source=args.source,
+            output_dir=args.output_dir,
+            calibration_frames=args.calibration_frames,
+            drone_method=args.drone_method,
+            target_height_m=args.height_m,
+            waypoint_spacing_px=args.waypoint_spacing,
+            speed_m_s=args.speed_m_s,
+            meters_per_pixel=args.meters_per_pixel,
+            position_tolerance_m=args.position_tolerance_m,
+            waypoint_timeout_s=args.waypoint_timeout_s,
+            reverse_path=args.reverse_path,
+            auto_orient=not args.no_auto_orient,
+            dry_run=args.dry_run,
+        )
+        return
+
+    if args.command == "follow-waypoints-manual-start":
+        follow_waypoints_manual_start(
+            mission_path=args.mission,
+            output_dir=args.output_dir,
+            input_path=args.input,
+            camera_index=args.camera_index,
+            source=args.source,
+            target_height_m=args.height_m,
+            waypoint_spacing_px=args.waypoint_spacing,
+            speed_m_s=args.speed_m_s,
+            meters_per_pixel=args.meters_per_pixel,
+            position_tolerance_m=args.position_tolerance_m,
+            waypoint_timeout_s=args.waypoint_timeout_s,
+            reverse_path=args.reverse_path,
+            start_x=args.start_x,
+            start_y=args.start_y,
+            dry_run=args.dry_run,
         )
         return
 

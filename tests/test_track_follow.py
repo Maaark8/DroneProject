@@ -4,10 +4,19 @@ import cv2
 import numpy as np
 
 from detectors.threshold_morph.detector import ThresholdMorphDetector
+from track_detection.codrone_adapter import NullFlightAdapter
 from track_detection.controller import TrackFollowerConfig, TrackFollowerController
 from track_detection.follow import _should_reverse_path
 from track_detection.mission import MissionPath, mission_path_from_result
 from track_detection.types import FrameInput
+from track_detection.waypoint_follow import follow_waypoints_manual_start
+from track_detection.waypoints import (
+    Waypoint,
+    marker_forward_heading_rad,
+    meters_per_pixel_from_reference,
+    path_start_heading_rad,
+    waypoint_mission_from_path,
+)
 
 
 def make_synthetic_track_frame(x_shift: int = 0) -> np.ndarray:
@@ -116,3 +125,102 @@ def test_auto_orient_reverses_when_drone_is_closer_to_path_end() -> None:
 
     assert _should_reverse_path(path, (98.0, 340.0))
     assert not _should_reverse_path(path, (102.0, 60.0))
+
+
+def test_mission_path_scale_round_trips(tmp_path) -> None:
+    mission = MissionPath(
+        points=[(10.0, 10.0), (20.0, 30.0)],
+        frame_size={"width": 100, "height": 100},
+        source_method="manual_click",
+        meters_per_pixel=0.004,
+        start_point_px=(12.0, 14.0),
+    )
+    path = tmp_path / "scaled_mission.json"
+    mission.save(path)
+    loaded = MissionPath.load(path)
+    assert loaded.meters_per_pixel == 0.004
+    assert loaded.start_point_px == (12.0, 14.0)
+
+
+def test_waypoint_transform_uses_marker_forward_heading() -> None:
+    mission = MissionPath(
+        points=[(100.0, 100.0), (100.0, 200.0)],
+        frame_size={"width": 400, "height": 400},
+        source_method="manual_click",
+        meters_per_pixel=0.01,
+    )
+    forward_heading = marker_forward_heading_rad(np.pi / 2.0)
+    assert forward_heading == 0.0
+
+    waypoint_mission = waypoint_mission_from_path(
+        mission=mission,
+        drone_start_px=(100.0, 100.0),
+        drone_forward_rad=forward_heading,
+        meters_per_pixel=0.01,
+        target_height_m=0.8,
+        waypoint_spacing_px=100.0,
+        speed_m_s=0.25,
+    )
+    assert len(waypoint_mission.waypoints) == 2
+    first, second = waypoint_mission.waypoints
+    assert first.x_m == 0.0
+    assert first.y_m == 0.0
+    assert second.x_m == 0.0
+    assert second.y_m < -0.9
+
+
+def test_reference_distance_converts_to_scale() -> None:
+    scale = meters_per_pixel_from_reference(((0.0, 0.0), (0.0, 100.0)), reference_distance_cm=50.0)
+    assert scale == 0.005
+
+
+def test_null_adapter_logs_waypoints() -> None:
+    adapter = NullFlightAdapter()
+    adapter.connect()
+    adapter.takeoff()
+    status = adapter.fly_waypoint(Waypoint(x_m=0.2, y_m=-0.1, z_m=0.8, speed_m_s=0.25), tolerance_m=0.08, timeout_s=6.0)
+    assert status["reached"]
+    assert adapter.command_history[-1]["waypoint"]["z_m"] == 0.8
+
+
+def test_path_start_heading_uses_first_segment() -> None:
+    heading = path_start_heading_rad([(100.0, 100.0), (100.0, 200.0), (150.0, 250.0)])
+    assert np.isclose(heading, np.pi / 2.0)
+
+
+def test_follow_waypoints_manual_start_uses_numeric_start(tmp_path) -> None:
+    mission = MissionPath(
+        points=[(100.0, 100.0), (100.0, 200.0), (100.0, 300.0)],
+        frame_size={"width": 400, "height": 400},
+        source_method="manual_click",
+        meters_per_pixel=0.01,
+    )
+    mission_path = tmp_path / "mission.json"
+    mission.save(mission_path)
+
+    waypoint_mission = follow_waypoints_manual_start(
+        mission_path=mission_path,
+        start_x=100.0,
+        start_y=100.0,
+        dry_run=True,
+    )
+    assert len(waypoint_mission.waypoints) >= 2
+    assert waypoint_mission.drone_start_px == (100.0, 100.0)
+
+
+def test_follow_waypoints_manual_start_uses_mission_start_point(tmp_path) -> None:
+    mission = MissionPath(
+        points=[(100.0, 100.0), (100.0, 200.0), (100.0, 300.0)],
+        frame_size={"width": 400, "height": 400},
+        source_method="manual_click",
+        meters_per_pixel=0.01,
+        start_point_px=(108.0, 112.0),
+    )
+    mission_path = tmp_path / "mission_with_start.json"
+    mission.save(mission_path)
+
+    waypoint_mission = follow_waypoints_manual_start(
+        mission_path=mission_path,
+        dry_run=True,
+    )
+    assert waypoint_mission.drone_start_px == (108.0, 112.0)
