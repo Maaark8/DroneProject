@@ -88,9 +88,28 @@ python3 -m track_detection.cli follow-track \
   --output-dir outputs/follow_wood_track
 ```
 
+Run the full overhead-camera workflow in one command. This mode samples live
+frames first, detects the track, saves `mission_path.json`, then takes off and
+starts following:
+
+```bash
+python3 -m track_detection.cli auto-follow \
+  --method threshold_morph \
+  --camera-index 0 \
+  --output-dir outputs/auto_follow_run
+```
+
+`auto-follow` tries to orient the saved path so it starts near the drone's
+detected top light. Disable that with `--no-auto-orient`, or force the opposite
+direction with `--reverse-path`.
+
 Use `--dry-run` to exercise the controller and debug overlays without pairing to
 the drone. If the camera axes are mirrored relative to the drone, flip them with
 `--roll-sign -1` and/or `--pitch-sign -1`.
+
+For phone or IP camera streams, the live commands now prefer low-buffer capture
+and always process the newest available frame so the CLI does not accumulate
+seconds of stale video when detection runs slower than the stream FPS.
 
 The detector defaults to colored lights because white highlights in the room can
 look like white LEDs. If you need white-light tracking, construct

@@ -9,6 +9,7 @@ import cv2
 from detectors.factory import create_detector
 
 from .io import ensure_directory, iter_image_files, result_to_payload, save_debug_frame, write_result_jsonl
+from .live_capture import normalize_capture_source, open_live_capture
 from .types import DetectionResult, FrameInput
 
 
@@ -92,8 +93,8 @@ def run_live_camera(
     max_frames: int | None = None,
 ) -> None:
     detector = create_detector(method)
-    capture_source = _normalize_capture_source(source if source is not None else camera_index)
-    capture = cv2.VideoCapture(capture_source)
+    capture_source = normalize_capture_source(source if source is not None else camera_index)
+    capture = open_live_capture(capture_source)
     if not capture.isOpened():
         raise ValueError(
             f"Unable to open live video source: {capture_source!r}. "
@@ -153,12 +154,3 @@ def run_live_camera(
             result_handle.close()
         if display:
             cv2.destroyAllWindows()
-
-
-def _normalize_capture_source(source: str | int) -> str | int:
-    if isinstance(source, int):
-        return source
-    stripped = source.strip()
-    if stripped.isdecimal():
-        return int(stripped)
-    return stripped

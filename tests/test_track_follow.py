@@ -5,6 +5,7 @@ import numpy as np
 
 from detectors.threshold_morph.detector import ThresholdMorphDetector
 from track_detection.controller import TrackFollowerConfig, TrackFollowerController
+from track_detection.follow import _should_reverse_path
 from track_detection.mission import MissionPath, mission_path_from_result
 from track_detection.types import FrameInput
 
@@ -73,7 +74,7 @@ def test_controller_generates_roll_pitch_and_throttle_commands() -> None:
     assert control.path_progress is not None
 
 
-def test_controller_hovers_then_lands_after_vision_loss() -> None:
+def test_controller_hovers_indefinitely_by_default_after_vision_loss() -> None:
     mission = MissionPath(
         points=[(320.0, 40.0), (320.0, 440.0)],
         frame_size={"width": 640, "height": 480},
@@ -88,4 +89,30 @@ def test_controller_hovers_then_lands_after_vision_loss() -> None:
 
     assert first.command.hover and not first.command.land
     assert second.command.hover and not second.command.land
+    assert third.command.hover and not third.command.land
+
+
+def test_controller_can_land_after_vision_loss_when_enabled() -> None:
+    mission = MissionPath(
+        points=[(320.0, 40.0), (320.0, 440.0)],
+        frame_size={"width": 640, "height": 480},
+        source_method="threshold_morph",
+    )
+    controller = TrackFollowerController(
+        mission,
+        TrackFollowerConfig(lost_frame_limit=2, land_on_vision_loss=True),
+    )
+    observation = {"valid": False, "confidence": 0.0, "target": None}
+
+    controller.update(observation)
+    controller.update(observation)
+    third = controller.update(observation)
+
     assert third.command.land
+
+
+def test_auto_orient_reverses_when_drone_is_closer_to_path_end() -> None:
+    path = [(100.0, 50.0), (100.0, 200.0), (100.0, 350.0)]
+
+    assert _should_reverse_path(path, (98.0, 340.0))
+    assert not _should_reverse_path(path, (102.0, 60.0))

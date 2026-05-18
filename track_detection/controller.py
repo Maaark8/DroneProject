@@ -36,7 +36,8 @@ class TrackFollowerConfig:
     lookahead_px: float = 70.0
     completion_radius_px: float = 30.0
     confidence_threshold: float = 0.45
-    lost_frame_limit: int = 8
+    lost_frame_limit: int = 30
+    land_on_vision_loss: bool = False
     lateral_deadband_norm: float = 0.04
     longitudinal_deadband_norm: float = 0.05
     height_target_cm: float = 80.0
@@ -153,7 +154,7 @@ class TrackFollowerController:
 
     def _handle_missing_target(self, reason: str) -> ControllerOutput:
         self._lost_frames += 1
-        land = self._lost_frames > self.config.lost_frame_limit
+        land = self.config.land_on_vision_loss and self._lost_frames > self.config.lost_frame_limit
         command = DroneCommand(
             hover=not land,
             land=land,
